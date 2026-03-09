@@ -56,7 +56,7 @@ export function validateCommand(command: string): void {
     throw new Error('Command must not be empty.');
   }
   // Absolute paths: check directly via filesystem
-  if (command.startsWith('/')) {
+  if (command.startsWith('/') || /^[A-Za-z]:[\\\\/]/.test(command)) {
     try {
       fs.accessSync(command, fs.constants.X_OK);
       return;
@@ -92,7 +92,7 @@ export function spawnAgent(
   },
 ): void {
   const channelId = args.onOutput.__CHANNEL_ID__;
-  const command = args.command || process.env.SHELL || '/bin/sh';
+  const command = args.command || (process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : process.env.SHELL || '/bin/sh');
   const cwd = args.cwd || process.env.HOME || '/';
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
@@ -102,7 +102,33 @@ export function spawnAgent(
     throw new Error(`Command contains disallowed characters: ${command}`);
   }
 
-  validateCommand(command);
+  console.log("[DEBUG] spawning command:", command);
+  // On Windows, resolve bare command names to absolute paths for winpty
+  let resolvedCommand = command;
+  if (process.platform === 'win32' && !command.includes('\\') && !command.includes('/')) {
+    const userProfile = process.env.USERPROFILE || 'C:\\Users\\terence.tham';
+    const searchPaths = [
+      userProfile + '\\.local\\bin',
+      (process.env.APPDATA || '') + '\\npm',
+      'C:\\Windows\\System32',
+      'C:\\Windows',
+      'C:\\Program Files\\Git\\bin',
+      'C:\\Program Files\\Git\\usr\\bin',
+    ];
+    outer: for (const dir of searchPaths) {
+      for (const ext of ['.exe', '.cmd', '']) {
+        const candidate = dir + '\\' + command + ext;
+        try {
+          fs.accessSync(candidate);
+          resolvedCommand = candidate;
+          break outer;
+        } catch {}
+      }
+    }
+    console.log('[DEBUG] resolved to:', resolvedCommand);
+  }
+  console.log("[DEBUG] PATH:", process.env.PATH?.split(";").slice(0,5).join(";"));
+  validateCommand(resolvedCommand);
 
   // Kill any existing session with the same agentId to prevent PTY leaks
   const existing = sessions.get(args.agentId);
@@ -136,24 +162,30 @@ export function spawnAgent(
     if (!ENV_BLOCK_LIST.has(k)) safeEnvOverrides[k] = v;
   }
 
-  const spawnEnv: Record<string, string> = {
-    ...filteredEnv,
-    TERM: 'xterm-256color',
-    COLORTERM: 'truecolor',
-    ...safeEnvOverrides,
-  };
+  const spawnEnv: Record<string, string> = { ...filteredEnv, TERM: "xterm-256color", COLORTERM: "truecolor", ...safeEnvOverrides };
+  if (process.platform === "win32") {
+    const winPaths = ["C:\\Windows\\System32", "C:\\Windows", "C:\\Program Files\\Git\\usr\\bin", "C:\\Program Files\\Git\\bin", (process.env.USERPROFILE || "C:\\Users\\terence.tham") + "\\.local\\bin"];
+    const cur = spawnEnv.PATH || "";
+    const extra = winPaths.filter(p => cur.indexOf(p) === -1).join(";");
+    if (extra) spawnEnv.PATH = cur + ";" + extra;
+  }
+  if (process.platform === "win32") {
+    const gitBin = "C:\\Program Files\\Git\\usr\\bin";
+    if (spawnEnv.PATH && spawnEnv.PATH.indexOf(gitBin) === -1) spawnEnv.PATH = gitBin + ";" + spawnEnv.PATH;
+  }
 
   // Clear env vars that prevent nested agent sessions
   delete spawnEnv.CLAUDECODE;
   delete spawnEnv.CLAUDE_CODE_SESSION;
   delete spawnEnv.CLAUDE_CODE_ENTRYPOINT;
 
-  const proc = pty.spawn(command, args.args, {
+  const proc = pty.spawn(resolvedCommand, args.args, {
     name: 'xterm-256color',
     cols: args.cols,
     rows: args.rows,
     cwd,
     env: spawnEnv,
+    useConpty: false,
   });
 
   const session: PtySession = {

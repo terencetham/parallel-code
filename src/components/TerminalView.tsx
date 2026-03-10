@@ -128,6 +128,26 @@ export function TerminalView(props: TerminalViewProps) {
         ? e.metaKey && !e.shiftKey && e.key === 'v'
         : e.ctrlKey && e.shiftKey && e.key === 'V';
 
+      // On Windows/Linux, Ctrl+C copies when text is selected, otherwise sends SIGINT
+      if (!isMac && e.ctrlKey && !e.shiftKey && e.key === 'c') {
+        const sel = term?.getSelection();
+        if (sel) {
+          navigator.clipboard.writeText(sel);
+          term?.clearSelection();
+          return false;
+        }
+        // No selection — let Ctrl+C pass through as SIGINT
+        return true;
+      }
+
+      // On Windows/Linux, Ctrl+V pastes from clipboard
+      if (!isMac && e.ctrlKey && !e.shiftKey && e.key === 'v') {
+        navigator.clipboard.readText().then((text) => {
+          if (text) enqueueInput(text);
+        });
+        return false;
+      }
+
       if (isCopy) {
         const sel = term?.getSelection();
         if (sel) navigator.clipboard.writeText(sel);
@@ -142,6 +162,84 @@ export function TerminalView(props: TerminalViewProps) {
       }
 
       return true;
+    });
+
+    // Right-click context menu with Copy / Paste
+    containerRef.addEventListener('contextmenu', (e: MouseEvent) => {
+      e.preventDefault();
+
+      // Remove any existing context menu
+      const existing = document.getElementById('terminal-context-menu');
+      if (existing) existing.remove();
+
+      const menu = document.createElement('div');
+      menu.id = 'terminal-context-menu';
+      Object.assign(menu.style, {
+        position: 'fixed',
+        left: `${e.clientX}px`,
+        top: `${e.clientY}px`,
+        background: 'var(--bg-secondary, #2d2d2d)',
+        border: '1px solid var(--border-color, #555)',
+        borderRadius: '4px',
+        padding: '4px 0',
+        zIndex: '10000',
+        minWidth: '120px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '13px',
+        color: 'var(--text-primary, #ccc)',
+      });
+
+      const sel = term?.getSelection() ?? '';
+
+      function addItem(label: string, enabled: boolean, action: () => void) {
+        const item = document.createElement('div');
+        item.textContent = label;
+        Object.assign(item.style, {
+          padding: '6px 16px',
+          cursor: enabled ? 'pointer' : 'default',
+          opacity: enabled ? '1' : '0.4',
+        });
+        if (enabled) {
+          item.addEventListener('mouseenter', () => {
+            item.style.background = 'var(--bg-hover, #3a3a3a)';
+          });
+          item.addEventListener('mouseleave', () => {
+            item.style.background = '';
+          });
+          item.addEventListener('click', () => {
+            menu.remove();
+            action();
+          });
+        }
+        menu.appendChild(item);
+      }
+
+      addItem('Copy', sel.length > 0, () => {
+        navigator.clipboard.writeText(sel);
+        term?.clearSelection();
+      });
+      addItem('Paste', true, () => {
+        navigator.clipboard.readText().then((text) => {
+          if (text) enqueueInput(text);
+        });
+        term?.focus();
+      });
+
+      document.body.appendChild(menu);
+
+      // Close menu on click outside or Escape
+      function closeMenu(ev: Event) {
+        if (ev instanceof KeyboardEvent && ev.key !== 'Escape') return;
+        menu.remove();
+        document.removeEventListener('click', closeMenu);
+        document.removeEventListener('keydown', closeMenu);
+      }
+      // Delay listener so the current click doesn't immediately close it
+      requestAnimationFrame(() => {
+        document.addEventListener('click', closeMenu);
+        document.addEventListener('keydown', closeMenu);
+      });
     });
 
     fitAddon.fit();

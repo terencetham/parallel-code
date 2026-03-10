@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { createWorktree, removeWorktree } from './git.js';
-import { killAgent, notifyAgentListChanged } from './pty.js';
+import { killAgentAndWait, notifyAgentListChanged } from './pty.js';
 
 const MAX_SLUG_LEN = 72;
 
@@ -50,13 +50,16 @@ export async function deleteTask(
   deleteBranch: boolean,
   projectRoot: string,
 ): Promise<void> {
-  for (const agentId of agentIds) {
-    try {
-      killAgent(agentId);
-    } catch {
-      /* already dead */
-    }
-  }
+  // Kill all agents and wait for them to actually exit.
+  // On Windows, processes hold directory locks until they fully terminate,
+  // so we must wait before attempting to remove the worktree.
+  await Promise.all(
+    agentIds.map((agentId) =>
+      killAgentAndWait(agentId).catch(() => {
+        /* already dead */
+      }),
+    ),
+  );
   await removeWorktree(projectRoot, branchName, deleteBranch);
   notifyAgentListChanged();
 }

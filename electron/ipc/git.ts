@@ -305,7 +305,11 @@ export async function createWorktree(
       try {
         await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
       } catch {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
+        try {
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+        } catch (e) {
+          console.warn(`[createWorktree] forceClean: failed to remove ${worktreePath}:`, e);
+        }
       }
       await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch((e) =>
         console.warn('git worktree prune failed:', e),
@@ -357,11 +361,43 @@ export async function removeWorktree(
   if (!fs.existsSync(repoRoot)) return;
 
   if (fs.existsSync(worktreePath)) {
+    // Helper: retry rmSync with back-off for Windows file locks
+    const rmWithRetry = async (): Promise<boolean> => {
+      const maxRetries = process.platform === 'win32' ? 8 : 1;
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+          return true;
+        } catch (e: unknown) {
+          const code = e instanceof Error ? (e as NodeJS.ErrnoException).code : '';
+          const isLockError = code === 'ENOTEMPTY' || code === 'EBUSY' || code === 'EPERM';
+          if (!isLockError) throw e;
+          if (i < maxRetries - 1) {
+            await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+          }
+        }
+      }
+      return false;
+    };
+
+    let removed = false;
     try {
       await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
+      removed = true;
     } catch {
-      // Fallback: direct directory removal
-      fs.rmSync(worktreePath, { recursive: true, force: true });
+      // Fallback: direct directory removal with retries for Windows file locks
+      removed = await rmWithRetry();
+    }
+
+    if (!removed) {
+      // On Windows, directories with broken ACLs or zombie file locks may be
+      // impossible to delete without admin elevation. Log and continue so the
+      // task can still be removed from the UI — the leftover directory is
+      // harmless and can be cleaned up manually or on next reboot.
+      console.warn(
+        `[removeWorktree] Could not delete ${worktreePath} after retries (EPERM). ` +
+          'Continuing with branch cleanup. The directory can be removed manually.',
+      );
     }
   }
 

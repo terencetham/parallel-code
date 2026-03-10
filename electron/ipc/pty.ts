@@ -92,7 +92,11 @@ export function spawnAgent(
   },
 ): void {
   const channelId = args.onOutput.__CHANNEL_ID__;
-  const command = args.command || (process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : process.env.SHELL || '/bin/sh');
+  const command =
+    args.command ||
+    (process.platform === 'win32'
+      ? 'C:\\Program Files\\Git\\bin\\bash.exe'
+      : process.env.SHELL || '/bin/sh');
   const cwd = args.cwd || process.env.HOME || '/';
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
@@ -102,7 +106,6 @@ export function spawnAgent(
     throw new Error(`Command contains disallowed characters: ${command}`);
   }
 
-  console.log("[DEBUG] spawning command:", command);
   // On Windows, resolve bare command names to absolute paths for winpty
   let resolvedCommand = command;
   if (process.platform === 'win32' && !command.includes('\\') && !command.includes('/')) {
@@ -122,12 +125,12 @@ export function spawnAgent(
           fs.accessSync(candidate);
           resolvedCommand = candidate;
           break outer;
-        } catch {}
+        } catch {
+          // Command not found at this path — try next candidate
+        }
       }
     }
-    console.log('[DEBUG] resolved to:', resolvedCommand);
   }
-  console.log("[DEBUG] PATH:", process.env.PATH?.split(";").slice(0,5).join(";"));
   validateCommand(resolvedCommand);
 
   // Kill any existing session with the same agentId to prevent PTY leaks
@@ -162,16 +165,28 @@ export function spawnAgent(
     if (!ENV_BLOCK_LIST.has(k)) safeEnvOverrides[k] = v;
   }
 
-  const spawnEnv: Record<string, string> = { ...filteredEnv, TERM: "xterm-256color", COLORTERM: "truecolor", ...safeEnvOverrides };
-  if (process.platform === "win32") {
-    const winPaths = ["C:\\Windows\\System32", "C:\\Windows", "C:\\Program Files\\Git\\usr\\bin", "C:\\Program Files\\Git\\bin", (process.env.USERPROFILE || "C:\\Users\\terence.tham") + "\\.local\\bin"];
-    const cur = spawnEnv.PATH || "";
-    const extra = winPaths.filter(p => cur.indexOf(p) === -1).join(";");
-    if (extra) spawnEnv.PATH = cur + ";" + extra;
+  const spawnEnv: Record<string, string> = {
+    ...filteredEnv,
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    ...safeEnvOverrides,
+  };
+  if (process.platform === 'win32') {
+    const winPaths = [
+      'C:\\Windows\\System32',
+      'C:\\Windows',
+      'C:\\Program Files\\Git\\usr\\bin',
+      'C:\\Program Files\\Git\\bin',
+      (process.env.USERPROFILE || 'C:\\Users\\terence.tham') + '\\.local\\bin',
+    ];
+    const cur = spawnEnv.PATH || '';
+    const extra = winPaths.filter((p) => cur.indexOf(p) === -1).join(';');
+    if (extra) spawnEnv.PATH = cur + ';' + extra;
   }
-  if (process.platform === "win32") {
-    const gitBin = "C:\\Program Files\\Git\\usr\\bin";
-    if (spawnEnv.PATH && spawnEnv.PATH.indexOf(gitBin) === -1) spawnEnv.PATH = gitBin + ";" + spawnEnv.PATH;
+  if (process.platform === 'win32') {
+    const gitBin = 'C:\\Program Files\\Git\\usr\\bin';
+    if (spawnEnv.PATH && spawnEnv.PATH.indexOf(gitBin) === -1)
+      spawnEnv.PATH = gitBin + ';' + spawnEnv.PATH;
   }
 
   // Clear env vars that prevent nested agent sessions
@@ -323,6 +338,33 @@ export function killAgent(agentId: string): void {
     session.subscribers.clear();
     session.proc.kill();
   }
+}
+
+/**
+ * Kill an agent and wait for its process to actually exit.
+ * On Windows, directory removal fails if a process still has its cwd there,
+ * so callers must await this before deleting worktrees.
+ */
+export function killAgentAndWait(agentId: string, timeoutMs = 5000): Promise<void> {
+  const session = sessions.get(agentId);
+  if (!session) return Promise.resolve();
+
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      unsub();
+      resolve(); // Resolve even on timeout — let the caller proceed with retries
+    }, timeoutMs);
+
+    const unsub = onPtyEvent('exit', (exitedId) => {
+      if (exitedId === agentId) {
+        clearTimeout(timer);
+        unsub();
+        resolve();
+      }
+    });
+
+    killAgent(agentId);
+  });
 }
 
 export function countRunningAgents(): number {

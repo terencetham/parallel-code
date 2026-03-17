@@ -49,9 +49,37 @@ const terminalBackground: Record<LookPreset, string> = {
   minimal: '#262626',
 };
 
+/** Bright, readable ANSI palette shared across all presets */
+const ansiColors = {
+  // Normal colors — lightened for readability on dark backgrounds
+  black: '#545454',
+  red: '#ff6b6b',
+  green: '#69db7c',
+  yellow: '#ffd43b',
+  blue: '#74c0fc',
+  magenta: '#da77f2',
+  cyan: '#66d9e8',
+  white: '#dee2e6',
+  // Bright colors
+  brightBlack: '#868e96',
+  brightRed: '#ff8787',
+  brightGreen: '#8ce99a',
+  brightYellow: '#ffe066',
+  brightBlue: '#a5d8ff',
+  brightMagenta: '#e599f7',
+  brightCyan: '#99e9f2',
+  brightWhite: '#f8f9fa',
+};
+
 /** Returns an xterm-compatible theme object for the given preset */
 export function getTerminalTheme(preset: LookPreset) {
   return {
     background: terminalBackground[preset],
+    foreground: '#d0d0d0',
+    cursor: '#d0d0d0',
+    cursorAccent: terminalBackground[preset],
+    selectionBackground: 'rgba(255, 255, 255, 0.2)',
+    selectionForeground: '#ffffff',
+    ...ansiColors,
   };
 }
